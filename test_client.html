@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Silver Voice — 음성 챗 + 이력서</title>
+<style>
+  body { font-family: -apple-system, system-ui, sans-serif; max-width: 760px;
+         margin: 1.5em auto; padding: 0 1em; line-height: 1.5; color: #222; }
+  h1 { margin-top: 0; font-size: 1.4em; }
+  .row { margin: 0.6em 0; }
+  input[type=text] { padding: 0.4em 0.6em; font-size: 0.95em; }
+  button { padding: 0.5em 1em; font-size: 1em; cursor: pointer; }
+  #record { padding: 1em 2em; font-size: 1.2em; background: #c44; color: #fff;
+            border: none; border-radius: 8px; }
+  #record:disabled { background: #aaa; cursor: not-allowed; }
+  #record.recording { background: #2a2; }
+  #status { color: #666; font-size: 0.9em; }
+  .label { font-weight: 600; color: #333; margin-top: 1em; display: block; }
+  .panel { background: #f7f7f7; padding: 0.8em 1em; border-radius: 6px;
+           min-height: 2em; white-space: pre-wrap; word-break: break-word; }
+  .reply { background: #eef7ff; }
+  #log { font-family: ui-monospace, monospace; font-size: 0.78em;
+         max-height: 200px; overflow-y: auto; background: #1e1e1e; color: #ddd;
+         padding: 0.6em; border-radius: 6px; }
+  .controls { display: flex; gap: 0.5em; align-items: center; flex-wrap: wrap; }
+  table.resume { width: 100%; border-collapse: collapse; margin-top: 0.4em; }
+  table.resume td { padding: 0.4em 0.6em; border: 1px solid #ddd; }
+  table.resume td.k { background: #f0f0f0; width: 30%; font-weight: 600; }
+  table.resume td.v.empty { color: #c00; font-style: italic; }
+  table.resume td.v.filled { color: #060; }
+</style>
+</head>
+<body>
+
+<h1>🎤 Silver Voice — 음성 챗 + 이력서 자동 채움</h1>
+
+<div class="row controls">
+  <label>WS URL:</label>
+  <input type="text" id="wsUrl" size="48" value="ws://localhost:8000/voice/ws">
+  <label>User ID:</label>
+  <input type="text" id="userId" size="14" value="test-user">
+  <button id="connect">연결</button>
+  <button id="reset">이력서 초기화</button>
+</div>
+
+<div class="row" id="status">대기중</div>
+
+<div class="row">
+  <button id="record" disabled>🎤 누르고 말하기</button>
+  <span style="margin-left: 1em; color: #666;">버튼 누르고 있는 동안만 녹음</span>
+</div>
+
+<span class="label">📋 현재 이력서 (서버 저장본 — 매 턴마다 갱신됨)</span>
+<table class="resume" id="resumeTable">
+  <tr><td class="k">이름</td><td class="v empty" data-k="name">—</td></tr>
+  <tr><td class="k">나이</td><td class="v empty" data-k="age">—</td></tr>
+  <tr><td class="k">거주지</td><td class="v empty" data-k="location">—</td></tr>
+  <tr><td class="k">경력</td><td class="v empty" data-k="career">—</td></tr>
+  <tr><td class="k">희망 근무형태</td><td class="v empty" data-k="preferred_work_type">—</td></tr>
+  <tr><td class="k">건강 상태</td><td class="v empty" data-k="physical_condition">—</td></tr>
+</table>
+<div class="row" style="font-size: 0.9em; color: #666;">
+  남은 항목: <span id="missing">—</span>
+</div>
+
+<span class="label">사용자 (STT)</span>
+<div class="panel" id="transcript">—</div>
+
+<span class="label">AI 응답 (LLM 스트림)</span>
+<div class="panel reply" id="reply">—</div>
+
+<span class="label">로그</span>
+<div id="log"></div>
+
+<script>
+const $ = id => document.getElementById(id);
+
+let ws = null;
+let recorder = null;
+let recStream = null;
+let userChunks = [];
+let replyChunks = [];
+let firstAudioAt = 0;
+let turnStartAt = 0;
+
+const log = (msg) => {
+  const t = new Date().toISOString().slice(11, 23);
+  $("log").textContent += `${t}  ${msg}\n`;
+  $("log").scrollTop = $("log").scrollHeight;
+};
+
+const setStatus = (s) => $("status").textContent = s;
+
+const renderResume = (resume, missingKorean) => {
+  for (const td of document.querySelectorAll("td.v")) {
+    const k = td.dataset.k;
+    const v = resume[k];
+    const filled = (k === "age") ? (typeof v === "number" && v > 0)
+                                  : (typeof v === "string" && v.trim().length > 0);
+    td.textContent = filled ? v : "—";
+    td.classList.toggle("empty", !filled);
+    td.classList.toggle("filled", filled);
+  }
+  $("missing").textContent = (missingKorean && missingKorean.length)
+      ? missingKorean.join(", ")
+      : "✅ 모두 입력됨";
+};
+
+const syncResume = () => {
+  // WS로 현재 이력서 상태 조회 push 요청
+  const userId = $("userId").value.trim();
+  if (!userId || !ws || ws.readyState !== WebSocket.OPEN) return;
+  ws.send(JSON.stringify({ type: "sync_resume", user_id: userId }));
+  log(`→ sync_resume (${userId})`);
+};
+
+$("reset").onclick = async () => {
+  const userId = $("userId").value.trim();
+  if (!userId) return;
+  try {
+    const wsUrl = new URL($("wsUrl").value);
+    const httpUrl = (wsUrl.protocol === "wss:" ? "https:" : "http:") + "//" + wsUrl.host;
+    const res = await fetch(`${httpUrl}/resume/${encodeURIComponent(userId)}`, { method: "DELETE" });
+    if (res.ok) {
+      log(`이력서 초기화 완료`);
+      $("transcript").textContent = "—";
+      $("reply").textContent = "—";
+      syncResume();   // 초기화 후 빈 상태 다시 받아옴
+    }
+  } catch (e) { log(`초기화 실패: ${e}`); }
+};
+
+$("connect").onclick = () => {
+  if (ws) { ws.close(); ws = null; }
+  const url = $("wsUrl").value.trim();
+  log(`WS 연결 시도: ${url}`);
+  ws = new WebSocket(url);
+  ws.binaryType = "arraybuffer";
+
+  ws.onopen = () => { setStatus("연결됨, ready 대기"); };
+  ws.onclose = (e) => { setStatus(`연결 끊김 (code=${e.code})`); $("record").disabled = true; };
+  ws.onerror = () => log("WS error");
+
+  ws.onmessage = (e) => {
+    if (typeof e.data === "string") {
+      const msg = JSON.parse(e.data);
+      if (msg.type === "llm_token") {
+        $("reply").textContent += msg.text;
+        return;  // 너무 자주라 로그 생략
+      }
+      log(`← ${msg.type}` + (msg.text !== undefined ? `  "${msg.text}"` : ""));
+
+      if (msg.type === "ready") {
+        setStatus("✅ ready");
+        $("record").disabled = false;
+        syncResume();
+      } else if (msg.type === "transcript") {
+        $("transcript").textContent = msg.text;
+        $("reply").textContent = "";
+        replyChunks = [];
+        firstAudioAt = 0;
+      } else if (msg.type === "resume_state") {
+        // 턴 시작 / sync 응답 — 변경 없는 스냅샷
+        renderResume(msg.resume, msg.missing_korean);
+      } else if (msg.type === "resume_updated") {
+        // 추출 직후 — 변경된 상태. 깜빡임으로 시각적 강조
+        renderResume(msg.resume, msg.missing_korean);
+        const tbl = $("resumeTable");
+        tbl.style.transition = "background 0.3s";
+        tbl.style.background = "#fffae6";
+        setTimeout(() => { tbl.style.background = ""; }, 600);
+        log("📋 이력서 갱신됨");
+      } else if (msg.type === "reply_done") {
+        const blob = new Blob(replyChunks, { type: "audio/mpeg" });
+        const audio = new Audio(URL.createObjectURL(blob));
+        audio.play();
+        const total = (performance.now() - turnStartAt) / 1000;
+        const firstAudioDelay = firstAudioAt ? (firstAudioAt - turnStartAt) / 1000 : NaN;
+        log(`재생: ${replyChunks.length} chunks / ${blob.size}B / 첫 오디오 ${firstAudioDelay.toFixed(2)}s / 총 ${total.toFixed(2)}s`);
+      } else if (msg.type === "error") {
+        log(`⚠️ ERROR: ${msg.msg}`);
+      }
+    } else {
+      if (!firstAudioAt) firstAudioAt = performance.now();
+      replyChunks.push(e.data);
+    }
+  };
+};
+
+const startRecord = async () => {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  if (recorder && recorder.state === "recording") return;
+  const userId = $("userId").value.trim();
+  if (!userId) { log("user_id 필요"); return; }
+
+  try {
+    recStream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true }
+    });
+    userChunks = [];
+    recorder = new MediaRecorder(recStream);
+    recorder.ondataavailable = (e) => { if (e.data.size) userChunks.push(e.data); };
+    recorder.onstop = async () => {
+      recStream.getTracks().forEach(t => t.stop());
+      const blob = new Blob(userChunks, { type: recorder.mimeType });
+      log(`녹음 종료: ${blob.size}B`);
+      turnStartAt = performance.now();
+      ws.send(JSON.stringify({ type: "turn", user_id: userId }));
+      ws.send(await blob.arrayBuffer());
+      log(`→ turn (${userId}) + audio 전송`);
+    };
+    recorder.start();
+    $("record").classList.add("recording");
+    $("record").textContent = "🔴 녹음 중... (떼면 전송)";
+    log("녹음 시작");
+  } catch (err) {
+    log(`마이크 접근 실패: ${err}`);
+  }
+};
+
+const stopRecord = () => {
+  if (recorder && recorder.state === "recording") recorder.stop();
+  $("record").classList.remove("recording");
+  $("record").textContent = "🎤 누르고 말하기";
+};
+
+$("record").addEventListener("mousedown", startRecord);
+$("record").addEventListener("touchstart", (e) => { e.preventDefault(); startRecord(); });
+$("record").addEventListener("mouseup", stopRecord);
+$("record").addEventListener("mouseleave", stopRecord);
+$("record").addEventListener("touchend", (e) => { e.preventDefault(); stopRecord(); });
+</script>
+
+</body>
+</html>
