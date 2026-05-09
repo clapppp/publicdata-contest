@@ -1,16 +1,27 @@
 """
 server.py — FastAPI 메인
-/voice     : 오디오 입력 → STT → LLM → TTS → JSON (음성 base64)
-/recommend : 이력서 → RAG → LLM → JSON
-/health    : 상태 확인
+/voice      : (POST)  오디오 → STT → LLM → TTS → JSON (legacy, 음성메시지)
+/voice/ws   : (WS)    실시간 스트리밍 (Stage 2: push-to-talk + LLM/TTS 토큰 스트림)
+/recommend  : (POST)  이력서 → RAG → LLM → JSON
+/refresh    : (POST)  100세누리 채용공고 재수집
+/health     : (GET)   상태 확인
 """
 import os
 import json
+import asyncio
 import base64
 import tempfile
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form
+from fastapi import (
+    FastAPI,
+    HTTPException,
+    UploadFile,
+    File,
+    Form,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -132,6 +143,92 @@ async def voice_chat(
         for p in (in_path, out_path):
             if p and os.path.exists(p):
                 os.unlink(p)
+
+
+SENTENCE_END = ".?!。？！"
+
+
+def _is_sentence_end(buf: str) -> bool:
+    """문장 끝났는지 단순 휴리스틱: rstrip 후 마지막 문자가 종결 부호이고 길이 충분"""
+    s = buf.rstrip()
+    return bool(s) and s[-1] in SENTENCE_END and len(s) > 5
+
+
+@app.websocket("/voice/ws")
+async def voice_ws(ws: WebSocket):
+    """
+    Stage 2 스트리밍 음성 챗 (push-to-talk).
+
+    프로토콜:
+        클라 → 서버
+            text JSON: {"type":"turn", "history":[{role,content},...]}
+            binary  : <audio file (mp3/wav/webm/m4a/...) bytes>
+        서버 → 클라
+            text JSON: {"type":"ready"}                    (연결 직후 1회)
+            text JSON: {"type":"transcript","text":"..."}  (STT 결과)
+            text JSON: {"type":"llm_token","text":"..."}   (LLM 토큰 N회)
+            binary  : <mp3 chunk> N회 (TTS 음성)
+            text JSON: {"type":"reply_done"}               (한 턴 응답 종료)
+            text JSON: {"type":"error","msg":"..."}        (오류 시)
+
+    한 WS 연결로 여러 턴 가능 — history는 매 턴마다 클라가 누적해서 보냄 (서버 stateless).
+    """
+    await ws.accept()
+    await ws.send_json({"type": "ready"})
+
+    while True:
+        try:
+            # 1) turn 시작 (history 받음)
+            init = await ws.receive_json()
+            if init.get("type") != "turn":
+                await ws.send_json({"type": "error", "msg": "expected type=turn"})
+                continue
+            history = init.get("history", [])
+
+            # 2) 오디오 받기
+            audio_bytes = await ws.receive_bytes()
+
+            # 3) STT (file로 떨어뜨리고 기존 transcribe 호출, blocking이라 to_thread)
+            in_path = None
+            try:
+                with tempfile.NamedTemporaryFile(suffix=".audio", delete=False) as f:
+                    f.write(audio_bytes)
+                    in_path = f.name
+                user_text = await asyncio.to_thread(stt.transcribe, in_path)
+            finally:
+                if in_path and os.path.exists(in_path):
+                    os.unlink(in_path)
+
+            await ws.send_json({"type": "transcript", "text": user_text})
+
+            # 4) LLM 토큰 스트림 → 문장 단위로 모아 TTS 청크 흘리기
+            sentence_buf = ""
+            async for token in llm.chat_stream("voice", user_text, history):
+                await ws.send_json({"type": "llm_token", "text": token})
+                sentence_buf += token
+
+                if _is_sentence_end(sentence_buf):
+                    async for chunk in tts.synthesize_stream(sentence_buf):
+                        await ws.send_bytes(chunk)
+                    sentence_buf = ""
+
+            # 5) 남은 텍스트 마저 TTS
+            if sentence_buf.strip():
+                async for chunk in tts.synthesize_stream(sentence_buf):
+                    await ws.send_bytes(chunk)
+
+            await ws.send_json({"type": "reply_done"})
+
+        except WebSocketDisconnect:
+            print("WS 연결 종료")
+            return
+        except Exception as e:
+            print(f"WS 오류: {e!r}")
+            try:
+                await ws.send_json({"type": "error", "msg": str(e)})
+            except Exception:
+                return  # 클라 이미 끊김
+            # 오류는 보고만 하고 다음 턴 대기 (연결 유지)
 
 
 @app.post("/recommend")

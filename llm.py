@@ -1,8 +1,13 @@
 """
 llm.py — Ollama 클라이언트 (qwen3 8b)
 system prompt로 voice / recommend 역할 분기
+
+- chat()         : 동기, 전체 응답 한 번에 (used by /recommend)
+- chat_stream()  : 비동기, 토큰별 yield (used by /voice/ws)
 """
+import json
 import requests
+import httpx
 
 OLLAMA_URL = "http://localhost:11434"
 MODEL_NAME = "qwen3:8b"  # load_model.sh로 등록되는 이름
@@ -78,7 +83,69 @@ def chat(role: str, user_message: str, history: list | None = None) -> str:
     return res.json()["message"]["content"]
 
 
+async def chat_stream(role: str, user_message: str, history: list | None = None):
+    """
+    Ollama /api/chat (stream=True) — 토큰별 async generator.
+
+    Usage:
+        async for token in chat_stream("voice", "안녕"):
+            print(token, end="", flush=True)
+
+    Args:
+        role: "voice" 또는 "recommend"
+        user_message: 사용자 입력
+        history: [{"role":"user"/"assistant", "content":"..."}]
+
+    Yields:
+        str — Ollama가 흘려보내는 텍스트 토큰 (조각)
+    """
+    if history is None:
+        history = []
+
+    messages = [{"role": "system", "content": SYSTEM_PROMPTS[role]}]
+    messages += history
+    messages.append({"role": "user", "content": user_message})
+
+    payload = {
+        "model": MODEL_NAME,
+        "messages": messages,
+        "stream": True,
+        "options": {
+            "temperature": 0.7 if role == "voice" else 0.1,
+            "num_ctx": 8192,
+        },
+    }
+
+    async with httpx.AsyncClient(timeout=httpx.Timeout(120.0)) as client:
+        async with client.stream("POST", f"{OLLAMA_URL}/api/chat", json=payload) as resp:
+            resp.raise_for_status()
+            async for line in resp.aiter_lines():
+                if not line:
+                    continue
+                try:
+                    data = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+
+                token = data.get("message", {}).get("content", "")
+                if token:
+                    yield token
+
+                if data.get("done"):
+                    break
+
+
 if __name__ == "__main__":
     if check_ollama():
-        print("\n--- voice 모드 테스트 ---")
+        print("\n--- voice 모드 테스트 (sync) ---")
         print(chat("voice", "안녕하세요, 이력서 작성 도와주세요"))
+
+        print("\n--- voice 모드 테스트 (stream) ---")
+        import asyncio
+
+        async def _demo():
+            async for token in chat_stream("voice", "안녕하세요, 이력서 작성 도와주세요"):
+                print(token, end="", flush=True)
+            print()
+
+        asyncio.run(_demo())
