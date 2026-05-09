@@ -75,10 +75,12 @@ def setup():
     global _client, _collection
 
     print(f"📦 임베딩 모델 로드: {EMBED_MODEL} (CPU)")
+    print(f"   ↳ 첫 실행 시 ~570MB 다운로드 (이후엔 캐시)")
     embed_fn = embedding_functions.SentenceTransformerEmbeddingFunction(
         model_name=EMBED_MODEL,
         device="cpu",
     )
+    print(f"   ↳ 모델 준비 완료")
 
     _client = chromadb.PersistentClient(path=DB_PATH)
 
@@ -99,8 +101,11 @@ def setup():
     refresh()
 
 
-def refresh():
-    """데이터 새로 수집 후 컬렉션 업데이트 (스케줄러에서 매일 06시 호출 예정)"""
+def refresh(batch_size: int = 100):
+    """
+    데이터 새로 수집 후 컬렉션 업데이트 (스케줄러에서 매일 06시 호출 예정).
+    임베딩은 batch_size 단위로 나눠서 진행 상황 출력.
+    """
     try:
         jobs = fetch_from_senuri(SENURI_API_KEY)
         if not jobs:
@@ -110,19 +115,28 @@ def refresh():
         print(f"⚠️ 100세누리 수집 실패 ({e}) → 샘플 데이터로 폴백")
         jobs = SAMPLE_JOBS
 
-    _collection.upsert(
-        ids=[j["id"] for j in jobs],
-        documents=[_job_to_text(j) for j in jobs],
-        metadatas=[{
-            "title": j["title"],
-            "company": j["company"],
-            "location": j["location"],
-            "work_type": j["work_type"],
-            "age_friendly": str(j["age_friendly"]),
-            "physical_intensity": j["physical_intensity"],
-        } for j in jobs],
-    )
-    print(f"✅ 적재 완료: {len(jobs)}건")
+    total = len(jobs)
+    print(f"📐 임베딩 시작 ({total}건, bge-m3 CPU, batch={batch_size})")
+
+    for i in range(0, total, batch_size):
+        chunk = jobs[i:i + batch_size]
+        _collection.upsert(
+            ids=[j["id"] for j in chunk],
+            documents=[_job_to_text(j) for j in chunk],
+            metadatas=[{
+                "title": j["title"],
+                "company": j["company"],
+                "location": j["location"],
+                "work_type": j["work_type"],
+                "age_friendly": str(j["age_friendly"]),
+                "physical_intensity": j["physical_intensity"],
+            } for j in chunk],
+        )
+        done = min(i + batch_size, total)
+        pct = round(done / total * 100)
+        print(f"   ↳ [{done:>4}/{total}] {pct}% 적재")
+
+    print(f"✅ 적재 완료: {total}건")
 
 
 def _fetch_page_with_retry(api_key: str, page: int, page_size: int, max_retries: int = 3):
@@ -282,6 +296,12 @@ def fetch_from_senuri(
             # 활성 target 도달 시 즉시 중단
             if len(all_jobs) >= target_count:
                 break
+
+        # 페이지별 진행 상황 출력
+        print(
+            f"   ↳ page {page:>2}: 누적 {len(all_jobs):>4}/{target_count}건 "
+            f"(마감 {skipped_closed}, 중복 {skipped_dup} 제외)"
+        )
 
         # 종료: target 도달 / 마지막 페이지 / totalCount 소진
         processed = (page - 1) * page_size + len(items)
