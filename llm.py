@@ -77,6 +77,7 @@ def chat(role: str, user_message: str, history: list | None = None) -> str:
             "model": MODEL_NAME,
             "messages": messages,
             "stream": False,
+            "think": False,   # qwen3 thinking 비활성화 (번호 목록 추론 누출 방지)
             "options": {
                 "temperature": 0.7 if role == "voice" else 0.1,
                 "num_ctx": 16384,
@@ -194,7 +195,8 @@ def extract_resume(history: list, existing: dict) -> dict:
                 {"role": "user", "content": history_text},
             ],
             "stream": False,
-            "options": {"temperature": 0.0, "num_ctx": 8192},
+            "think": False,
+            "options": {"temperature": 0.0, "num_ctx": 16384},
         },
         timeout=60,
     )
@@ -244,7 +246,8 @@ async def chat_stream_with_prompt(
         "model": MODEL_NAME,
         "messages": messages,
         "stream": True,
-        "options": {"temperature": temperature, "num_ctx": 8192},
+        "think": False,   # qwen3 thinking 비활성화
+        "options": {"temperature": temperature, "num_ctx": 16384},
     }
 
     async with httpx.AsyncClient(timeout=httpx.Timeout(120.0)) as client:
@@ -291,6 +294,7 @@ async def chat_stream(role: str, user_message: str, history: list | None = None)
         "model": MODEL_NAME,
         "messages": messages,
         "stream": True,
+        "think": False,
         "options": {
             "temperature": 0.7 if role == "voice" else 0.1,
             "num_ctx": 16384,

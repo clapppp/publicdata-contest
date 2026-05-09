@@ -61,6 +61,7 @@ FROM ./$GGUF_FILE
 PARAMETER num_ctx 16384
 PARAMETER num_gpu 99
 EOF
+(cd "$MODEL_DIR" && ollama create "$OLLAMA_NAME" -f Modelfile)
 
 echo "[4/4] 원본 GGUF 삭제 (Ollama 블롭으로 이미 복사됨)"
 rm -f "$MODEL_DIR/$GGUF_FILE" "$MODEL_DIR/.gguf_filename"
