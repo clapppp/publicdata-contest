@@ -213,6 +213,12 @@ def fetch_from_senuri(
     skipped_closed = 0
     skipped_dup = 0
 
+    # 페이지를 받아도 활성 공고가 거의 안 늘면 중단
+    STAGNANT_LIMIT = 3   # 연속 N페이지 동안 미달 시 중단
+    MIN_GAIN = 5         # 페이지당 최소 활성 증가 기대치
+    stagnant_pages = 0
+    prev_count = 0
+
     while page <= max_pages and len(all_jobs) < target_count:
         if page > 1:
             time.sleep(sleep_between)
@@ -297,15 +303,27 @@ def fetch_from_senuri(
             if len(all_jobs) >= target_count:
                 break
 
-        # 페이지별 진행 상황 출력
+        # 이번 페이지에서 활성 공고 얼마나 늘었나
+        gained = len(all_jobs) - prev_count
+        prev_count = len(all_jobs)
+        if gained < MIN_GAIN:
+            stagnant_pages += 1
+        else:
+            stagnant_pages = 0
+
         print(
             f"   ↳ page {page:>2}: 누적 {len(all_jobs):>4}/{target_count}건 "
-            f"(마감 {skipped_closed}, 중복 {skipped_dup} 제외)"
+            f"(+{gained}, 마감 {skipped_closed}, 중복 {skipped_dup})"
         )
 
-        # 종료: target 도달 / 마지막 페이지 / totalCount 소진
+        # 종료 조건들
         processed = (page - 1) * page_size + len(items)
-        if len(all_jobs) >= target_count or processed >= total_count or len(items) < page_size:
+        if len(all_jobs) >= target_count:
+            break
+        if processed >= total_count or len(items) < page_size:
+            break
+        if stagnant_pages >= STAGNANT_LIMIT:
+            print(f"   ↳ {STAGNANT_LIMIT}페이지 연속 활성 증가 {MIN_GAIN}건 미만 — 수집 중단")
             break
         page += 1
 
