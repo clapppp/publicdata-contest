@@ -13,6 +13,13 @@ OLLAMA_NAME="qwen3:14b"
 
 mkdir -p "$MODEL_DIR"
 
+echo "[0/5] 이미 등록된 모델인지 확인"
+if ollama list 2>/dev/null | grep -q "^${OLLAMA_NAME}"; then
+    echo "  ↳ ${OLLAMA_NAME} 이미 등록됨 — 스킵"
+    ollama list
+    exit 0
+fi
+
 echo "[1/4] Ollama 서버 재시작 (OLLAMA_MODELS=$OLLAMA_MODELS 적용)"
 pkill -f "ollama serve" 2>/dev/null || true
 sleep 1
@@ -47,7 +54,7 @@ PYEOF
 
 GGUF_FILE=$(cat "$MODEL_DIR/.gguf_filename")
 
-echo "[3/4] Modelfile 작성"
+echo "[3/4] Modelfile 작성 + Ollama 등록"
 cat > "$MODEL_DIR/Modelfile" <<EOF
 FROM ./$GGUF_FILE
 
@@ -55,8 +62,8 @@ PARAMETER num_ctx 16384
 PARAMETER num_gpu 99
 EOF
 
-echo "[4/4] Ollama 등록 ($OLLAMA_NAME) → $OLLAMA_MODELS 에 저장"
-(cd "$MODEL_DIR" && ollama create "$OLLAMA_NAME" -f Modelfile)
+echo "[4/4] 원본 GGUF 삭제 (Ollama 블롭으로 이미 복사됨)"
+rm -f "$MODEL_DIR/$GGUF_FILE" "$MODEL_DIR/.gguf_filename"
 
 echo ""
 echo "완료. 등록된 모델:"
