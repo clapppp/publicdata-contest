@@ -263,12 +263,17 @@ def fetch_from_senuri(
             if deadline:
                 description_parts.append(f"상태: {deadline}")
 
+            # emplymShpNm이 한글 대신 코드(CM0105 등)로 오는 API 버그 → 클라에서 매핑
+            emp_code = (item.findtext("emplymShp") or "").strip()
+            emp_nm = (item.findtext("emplymShpNm") or "").strip()
+            work_type = EMPLOYMENT_TYPES.get(emp_code, emp_nm or emp_code or "기타")
+
             all_jobs.append({
                 "id": job_id,
                 "title": (item.findtext("recrtTitle") or "").strip(),
                 "company": (item.findtext("oranNm") or "").strip() or "(기업명 미공개)",
                 "location": (item.findtext("workPlcNm") or "").strip(),
-                "work_type": (item.findtext("emplymShpNm") or "").strip(),
+                "work_type": work_type,
                 "description": " | ".join(description_parts),
                 "age_friendly": True,  # 100세누리 전체가 60세 이상 시니어 대상
                 "physical_intensity": "unknown",
