@@ -278,13 +278,14 @@ async def chat_stream_with_prompt(
     """
     messages = [{"role": "system", "content": system_prompt}]
     messages += history
-    messages.append({"role": "user", "content": user_message})
+    # /no_think 토큰: qwen3 thinking 모드 비활성화 (API 파라미터보다 확실)
+    messages.append({"role": "user", "content": f"/no_think {user_message}"})
 
     payload = {
         "model": MODEL_NAME,
         "messages": messages,
         "stream": True,
-        "think": False,   # qwen3 thinking 비활성화 (API 레벨)
+        "think": False,
         "options": {"temperature": temperature, "num_ctx": 16384},
     }
 

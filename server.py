@@ -143,6 +143,15 @@ async def voice_ws(ws: WebSocket):
     """
     await ws.accept()
     await ws.send_json({"type": "ready"})
+    await ws.send_json({
+        "type": "greeting",
+        "text": (
+            "안녕하세요! 시니어 일자리 상담 도우미입니다. "
+            "버튼을 누르고 계신 동안 말씀해 주세요. "
+            "이름, 나이, 사시는 곳, 하셨던 일, 원하시는 근무 형태, 건강 상태를 여쭤볼게요. "
+            "준비되시면 버튼을 눌러 시작해 주세요."
+        ),
+    })
 
     while True:
         try:
