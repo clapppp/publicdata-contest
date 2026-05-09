@@ -1,5 +1,5 @@
 """
-llm.py — Ollama 클라이언트 (qwen3 8b)
+llm.py — Ollama 클라이언트 (qwen3 14b)
 
 함수 종류:
 - chat()                       : 동기, 전체 응답 한 번 (legacy POST /voice, /recommend)
@@ -14,7 +14,7 @@ import requests
 import httpx
 
 OLLAMA_URL = "http://localhost:11434"
-MODEL_NAME = "qwen3:8b"  # load_model.sh로 등록되는 이름
+MODEL_NAME = "qwen3:14b"  # load_model.sh로 등록되는 이름
 
 SYSTEM_PROMPTS = {
     "voice": """너는 시니어 구직자를 돕는 친절한 상담사야.
@@ -79,7 +79,7 @@ def chat(role: str, user_message: str, history: list | None = None) -> str:
             "stream": False,
             "options": {
                 "temperature": 0.7 if role == "voice" else 0.1,
-                "num_ctx": 8192,
+                "num_ctx": 16384,
             },
         },
         timeout=120,
@@ -293,7 +293,7 @@ async def chat_stream(role: str, user_message: str, history: list | None = None)
         "stream": True,
         "options": {
             "temperature": 0.7 if role == "voice" else 0.1,
-            "num_ctx": 8192,
+            "num_ctx": 16384,
         },
     }
 

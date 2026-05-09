@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
-# qwen3 8b GGUF (Q4_K_M) HuggingFace 다운로드 → Ollama 등록
+# qwen3 14b GGUF (Q4_K_M) HuggingFace 다운로드 → Ollama 등록
+# 20GB VRAM 기준 ~8.5GB 사용 (8b 대비 여유 있음)
 # OLLAMA_MODELS 가 /workspace 볼륨을 가리키도록 ollama serve 재시작 후 진행
 
 set -euo pipefail
 source ./env.sh
 
-REPO_ID="Qwen/Qwen3-8B-GGUF"   # 공식 repo 없으면 후보: bartowski/Qwen3-8B-GGUF
-QUANT="q4_k_m"                  # 20GB VRAM에 여유 있어 q5_k_m 도 가능
+REPO_ID="Qwen/Qwen3-14B-GGUF"  # 공식 repo 없으면 후보: bartowski/Qwen3-14B-GGUF
+QUANT="q4_k_m"                  # 20GB VRAM에 충분 (8.5GB 사용)
 MODEL_DIR="./models"
-OLLAMA_NAME="qwen3:8b"
+OLLAMA_NAME="qwen3:14b"
 
 mkdir -p "$MODEL_DIR"
 
@@ -50,7 +51,7 @@ echo "[3/4] Modelfile 작성"
 cat > "$MODEL_DIR/Modelfile" <<EOF
 FROM ./$GGUF_FILE
 
-PARAMETER num_ctx 8192
+PARAMETER num_ctx 16384
 PARAMETER num_gpu 99
 EOF
 
