@@ -125,6 +125,41 @@ def refresh():
     print(f"✅ 적재 완료: {len(jobs)}건")
 
 
+def _fetch_page_with_retry(api_key: str, page: int, page_size: int, max_retries: int = 3):
+    """
+    단일 페이지 요청 + 재시도 로직.
+
+    Returns:
+        ("ok", response)        — 성공
+        ("stop", reason_str)    — rate limit (401/429/503) → 전체 fetch 중단
+        ("skip", reason_str)    — 일시 실패 (timeout/conn err 등) → 이 페이지만 스킵
+    """
+    last_err = None
+    for attempt in range(1, max_retries + 1):
+        try:
+            res = requests.get(
+                SENURI_BASE,
+                params={"serviceKey": api_key, "pageNo": page, "numOfRows": page_size},
+                timeout=60,
+            )
+            res.raise_for_status()
+            return ("ok", res)
+        except requests.HTTPError as e:
+            status = e.response.status_code if e.response is not None else 0
+            if status in (401, 429, 503):
+                return ("stop", f"HTTP {status}")
+            last_err = f"HTTP {status}"
+        except requests.RequestException as e:
+            last_err = type(e).__name__
+
+        if attempt < max_retries:
+            wait = 2 * attempt
+            print(f"  ⚠️ page {page} attempt {attempt} 실패 ({last_err}), {wait}s 후 재시도")
+            time.sleep(wait)
+
+    return ("skip", last_err)
+
+
 def fetch_from_senuri(
     api_key: str,
     page_size: int = 100,
@@ -168,26 +203,17 @@ def fetch_from_senuri(
         if page > 1:
             time.sleep(sleep_between)
 
-        try:
-            res = requests.get(
-                SENURI_BASE,
-                params={
-                    "serviceKey": api_key,
-                    "pageNo": page,
-                    "numOfRows": page_size,
-                },
-                timeout=30,
-            )
-            res.raise_for_status()
-        except requests.HTTPError as e:
-            status = e.response.status_code if e.response is not None else 0
-            if status in (401, 429, 503):
-                # rate limit / quota / 일시 거부 — 지금까지 받은 거로 진행
-                print(f"  ⚠️ page {page}: HTTP {status} (rate limit 추정) — "
-                      f"여기까지 {len(all_jobs)}건만 사용")
-                break
-            raise
+        outcome, payload = _fetch_page_with_retry(api_key, page, page_size)
+        if outcome == "stop":
+            print(f"  ⚠️ page {page}: {payload} (rate limit/quota) — "
+                  f"여기까지 {len(all_jobs)}건만 사용")
+            break
+        if outcome == "skip":
+            print(f"  ⚠️ page {page}: {payload} 재시도 모두 실패, 다음 페이지로")
+            page += 1
+            continue
 
+        res = payload
         root = ET.fromstring(res.text)
 
         # 결과코드 확인 (정상: 0 또는 00)
