@@ -15,7 +15,9 @@ echo "[1/3] 시스템 패키지 (PyTorch 이미지에 없는 것만)"
 $SUDO apt-get update
 $SUDO apt-get install -y --no-install-recommends \
     curl \
-    ffmpeg
+    ffmpeg \
+    zstd \
+    lshw
 
 echo "[2/3] Python 패키지 설치"
 pip install --no-cache-dir -r requirements.txt
