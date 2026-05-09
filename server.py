@@ -218,7 +218,7 @@ async def voice_ws(ws: WebSocket):
             # 3) STT
             in_path = None
             try:
-                with tempfile.NamedTemporaryFile(suffix=".webm", delete=False) as f:
+                with tempfile.NamedTemporaryFile(suffix=".bin", delete=False) as f:
                     f.write(audio_bytes)
                     in_path = f.name
                 user_text = await asyncio.to_thread(stt.transcribe, in_path)
