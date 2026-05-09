@@ -19,10 +19,13 @@ $SUDO apt-get install -y --no-install-recommends \
     zstd \
     lshw
 
-echo "[2/3] Python 패키지 설치"
+echo "[2/4] Python 패키지 설치"
 pip install --no-cache-dir -r requirements.txt
 
-echo "[3/3] Ollama 설치"
+echo "[3/4] MeloTTS 설치 (한국어 로컬 TTS, git+pip)"
+pip install --no-cache-dir git+https://github.com/myshell-ai/MeloTTS.git
+
+echo "[4/4] Ollama 설치"
 if ! command -v ollama &> /dev/null; then
     curl -fsSL https://ollama.com/install.sh | sh
 else

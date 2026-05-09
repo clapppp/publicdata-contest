@@ -80,9 +80,31 @@ let ws = null;
 let recorder = null;
 let recStream = null;
 let userChunks = [];
-let replyChunks = [];
 let firstAudioAt = 0;
 let turnStartAt = 0;
+
+// 응답 오디오 큐 (MeloTTS는 문장당 1 wav 청크 → 도착 즉시 순차 재생)
+let audioQueue = [];
+let nowPlaying = null;
+let chunksPlayedThisTurn = 0;
+let bytesThisTurn = 0;
+
+function playNext() {
+  if (audioQueue.length === 0) { nowPlaying = null; return; }
+  const blob = audioQueue.shift();
+  nowPlaying = new Audio(URL.createObjectURL(blob));
+  nowPlaying.onended = playNext;
+  nowPlaying.onerror = (e) => { log("audio error: " + e); playNext(); };
+  nowPlaying.play();
+}
+
+function enqueueAudio(arrayBuffer) {
+  const blob = new Blob([arrayBuffer], { type: "audio/wav" });
+  bytesThisTurn += arrayBuffer.byteLength;
+  chunksPlayedThisTurn++;
+  audioQueue.push(blob);
+  if (!nowPlaying) playNext();
+}
 
 const log = (msg) => {
   const t = new Date().toISOString().slice(11, 23);
@@ -158,7 +180,8 @@ $("connect").onclick = () => {
       } else if (msg.type === "transcript") {
         $("transcript").textContent = msg.text;
         $("reply").textContent = "";
-        replyChunks = [];
+        chunksPlayedThisTurn = 0;
+        bytesThisTurn = 0;
         firstAudioAt = 0;
       } else if (msg.type === "resume_state") {
         // 턴 시작 / sync 응답 — 변경 없는 스냅샷
@@ -172,18 +195,16 @@ $("connect").onclick = () => {
         setTimeout(() => { tbl.style.background = ""; }, 600);
         log("📋 이력서 갱신됨");
       } else if (msg.type === "reply_done") {
-        const blob = new Blob(replyChunks, { type: "audio/mpeg" });
-        const audio = new Audio(URL.createObjectURL(blob));
-        audio.play();
         const total = (performance.now() - turnStartAt) / 1000;
         const firstAudioDelay = firstAudioAt ? (firstAudioAt - turnStartAt) / 1000 : NaN;
-        log(`재생: ${replyChunks.length} chunks / ${blob.size}B / 첫 오디오 ${firstAudioDelay.toFixed(2)}s / 총 ${total.toFixed(2)}s`);
+        log(`완료: ${chunksPlayedThisTurn} chunks / ${bytesThisTurn}B / 첫 오디오 ${firstAudioDelay.toFixed(2)}s / 총 ${total.toFixed(2)}s`);
       } else if (msg.type === "error") {
         log(`⚠️ ERROR: ${msg.msg}`);
       }
     } else {
+      // binary = wav 청크 1개 (한 문장) → 도착 즉시 큐에 푸시 + 자동 재생
       if (!firstAudioAt) firstAudioAt = performance.now();
-      replyChunks.push(e.data);
+      enqueueAudio(e.data);
     }
   };
 };

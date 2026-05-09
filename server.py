@@ -44,6 +44,7 @@ async def lifespan(app: FastAPI):
         raise RuntimeError("Ollama 미준비. setup.sh + load_model.sh 실행 필요")
     rag.setup()
     stt.setup()
+    tts.setup()  # MeloTTS 모델 로드 (~500MB GPU, 5-15초)
     yield
 
 
@@ -127,8 +128,8 @@ async def voice_chat(
         # 2) LLM
         reply_text = llm.chat(role="voice", user_message=user_text, history=history_list)
 
-        # 3) TTS
-        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
+        # 3) TTS (MeloTTS 출력은 wav)
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
             out_path = f.name
         tts.synthesize(reply_text, out_path)
         with open(out_path, "rb") as f:
