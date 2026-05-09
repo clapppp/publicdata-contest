@@ -128,7 +128,8 @@ def refresh():
 def fetch_from_senuri(
     api_key: str,
     page_size: int = 100,
-    max_pages: int = 10,
+    target_count: int = 1000,
+    max_pages: int = 50,
     exclude_closed: bool = True,
     sleep_between: float = 0.5,
 ) -> list[dict]:
@@ -141,24 +142,29 @@ def fetch_from_senuri(
               <body><items><item>...</item></items>
                     <numOfRows/><pageNo/><totalCount/></body></response>
 
+    페이지를 순회하며 마감/중복 제외한 **활성** 공고가 target_count에 도달하면 중단.
+    100세누리는 워크넷/일모아 통합 집계라 totalCount가 수십만 단위인데 활성 비율은
+    낮음(~30%) — 따라서 raw 페이지 cap이 아니라 활성 건수 목표 기반으로 fetch.
+
     Args:
         api_key: 공공데이터포털 발급 인증키
         page_size: 페이지당 결과 수 (numOfRows). 기본 100
-        max_pages: 최대 페이지 수. 기본 10 = 1000건. 100세누리는 워크넷/일모아 통합
-                   집계라 totalCount가 수십만~백만 단위로 오는데, CPU bge-m3 임베딩
-                   부담 + 갱신 시간 고려해 cap. 더 받고 싶으면 늘리되 임베딩 시간 주의
-        exclude_closed: 마감된 공고 제외 (기본 True)
+        target_count: 활성 공고 목표 건수. 도달 시 중단 (기본 1000)
+        max_pages: 안전 상한. target 못 채워도 여기서 강제 중단 (기본 50 = raw 5000건)
+        exclude_closed: 마감 공고 제외 (기본 True)
         sleep_between: 페이지 간 sleep 초. 401 burst rate limit 방지용 (기본 0.5)
 
     Returns:
-        정규화된 채용공고 dict 리스트 (최대 max_pages * page_size 건)
+        정규화된 활성 채용공고 dict 리스트 (목표 도달 시 정확히 target_count, 못 채우면 그 이하)
     """
     all_jobs = []
+    seen_ids = set()
     page = 1
     total_count = None
     skipped_closed = 0
+    skipped_dup = 0
 
-    while page <= max_pages:
+    while page <= max_pages and len(all_jobs) < target_count:
         if page > 1:
             time.sleep(sleep_between)
 
@@ -192,7 +198,7 @@ def fetch_from_senuri(
 
         if total_count is None:
             total_count = int((root.findtext(".//totalCount") or "0").strip() or "0")
-            print(f"  totalCount: {total_count}건 (cap {max_pages * page_size}건까지 수집)")
+            print(f"  totalCount: {total_count}건 (활성 {target_count}건까지 수집)")
             if total_count == 0:
                 return []
 
@@ -204,6 +210,12 @@ def fetch_from_senuri(
             job_id = (item.findtext("jobId") or "").strip()
             if not job_id:
                 continue
+
+            # 100세누리는 같은 jobId가 페이지 간/시스템 간 중복 등장하는 경우 있음
+            if job_id in seen_ids:
+                skipped_dup += 1
+                continue
+            seen_ids.add(job_id)
 
             deadline = (item.findtext("deadline") or "").strip()
             if exclude_closed and deadline == "마감":
@@ -236,15 +248,26 @@ def fetch_from_senuri(
                 "physical_intensity": "unknown",
             })
 
-        # 종료: 마지막 페이지 또는 totalCount 모두 처리
+            # 활성 target 도달 시 즉시 중단
+            if len(all_jobs) >= target_count:
+                break
+
+        # 종료: target 도달 / 마지막 페이지 / totalCount 소진
         processed = (page - 1) * page_size + len(items)
-        if processed >= total_count or len(items) < page_size:
+        if len(all_jobs) >= target_count or processed >= total_count or len(items) < page_size:
             break
         page += 1
 
     msg = f"  수집 완료: {len(all_jobs)}건"
+    extras = []
     if skipped_closed:
-        msg += f" (마감 {skipped_closed}건 제외)"
+        extras.append(f"마감 {skipped_closed}건")
+    if skipped_dup:
+        extras.append(f"중복 {skipped_dup}건")
+    if extras:
+        msg += f" ({', '.join(extras)} 제외)"
+    if len(all_jobs) < target_count:
+        msg += f" — 목표 {target_count}건 미달, max_pages={max_pages} 도달"
     print(msg)
     return all_jobs
 
