@@ -59,6 +59,26 @@ def health():
     return {"status": "ok", "model": llm.MODEL_NAME}
 
 
+@app.post("/refresh")
+def refresh_jobs():
+    """
+    워크넷 API에서 채용공고 재수집 → ChromaDB upsert.
+    수동 호출 또는 일일 06시 스케줄러에서 사용.
+    """
+    try:
+        before = rag._collection.count()
+        rag.refresh()
+        after = rag._collection.count()
+        return {
+            "status": "ok",
+            "before": before,
+            "after": after,
+            "delta": after - before,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.post("/voice")
 async def voice_chat(
     audio: UploadFile = File(...),
