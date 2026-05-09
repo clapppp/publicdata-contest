@@ -70,7 +70,7 @@ _collection = None
 
 
 def setup():
-    """ChromaDB 초기화. DB 비어있으면 데이터 적재."""
+    """ChromaDB 초기화 + 매 startup마다 컬렉션 wipe → 워크넷에서 재수집."""
     global _client, _collection
 
     print(f"📦 임베딩 모델 로드: {EMBED_MODEL} (CPU)")
@@ -80,17 +80,22 @@ def setup():
     )
 
     _client = chromadb.PersistentClient(path=DB_PATH)
-    _collection = _client.get_or_create_collection(
+
+    # 매 startup마다 컬렉션 삭제 후 재생성 (stale 데이터 방지)
+    try:
+        _client.delete_collection(COLLECTION_NAME)
+        print("  기존 컬렉션 삭제")
+    except Exception:
+        pass
+
+    _collection = _client.create_collection(
         name=COLLECTION_NAME,
         embedding_function=embed_fn,
         metadata={"hnsw:space": "cosine"},
     )
 
-    if _collection.count() == 0:
-        print("📝 빈 DB → 초기 데이터 적재")
-        refresh()
-    else:
-        print(f"✅ RAG 준비 완료 | 채용공고 {_collection.count()}건")
+    print("📝 워크넷 API에서 데이터 수집")
+    refresh()
 
 
 def refresh():
