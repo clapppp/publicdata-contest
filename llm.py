@@ -226,6 +226,44 @@ def extract_resume(history: list, existing: dict) -> dict:
     return merged
 
 
+# ── <think> 블록 스트림 필터 ────────────────────────────────────────────────
+
+async def _filter_think(raw_stream):
+    """
+    qwen3 <think>...</think> 블록을 스트림에서 제거하는 async generator 래퍼.
+    토큰이 쪼개져 오기 때문에 버퍼로 상태를 유지함.
+    """
+    buf = ""
+    in_think = False
+
+    async for token in raw_stream:
+        buf += token
+        out = ""
+        while buf:
+            if not in_think:
+                idx = buf.find("<think>")
+                if idx == -1:
+                    # <think> 시작 없음 — 버퍼 전체 출력 (단, 끝이 '<'로 끝나면 대기)
+                    if buf.endswith("<"):
+                        break
+                    out += buf
+                    buf = ""
+                else:
+                    out += buf[:idx]       # <think> 이전 내용 출력
+                    buf = buf[idx:]
+                    in_think = True
+            else:
+                idx = buf.find("</think>")
+                if idx == -1:
+                    buf = ""               # thinking 내용 전부 버림
+                    break
+                else:
+                    buf = buf[idx + len("</think>"):]
+                    in_think = False
+        if out:
+            yield out
+
+
 # ── 신규 stream 함수: system prompt 직접 주입 ────────────────────────────────
 
 async def chat_stream_with_prompt(
@@ -246,25 +284,29 @@ async def chat_stream_with_prompt(
         "model": MODEL_NAME,
         "messages": messages,
         "stream": True,
-        "think": False,   # qwen3 thinking 비활성화
+        "think": False,   # qwen3 thinking 비활성화 (API 레벨)
         "options": {"temperature": temperature, "num_ctx": 16384},
     }
 
-    async with httpx.AsyncClient(timeout=httpx.Timeout(120.0)) as client:
-        async with client.stream("POST", f"{OLLAMA_URL}/api/chat", json=payload) as resp:
-            resp.raise_for_status()
-            async for line in resp.aiter_lines():
-                if not line:
-                    continue
-                try:
-                    data = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                token = data.get("message", {}).get("content", "")
-                if token:
-                    yield token
-                if data.get("done"):
-                    break
+    async def _raw():
+        async with httpx.AsyncClient(timeout=httpx.Timeout(120.0)) as client:
+            async with client.stream("POST", f"{OLLAMA_URL}/api/chat", json=payload) as resp:
+                resp.raise_for_status()
+                async for line in resp.aiter_lines():
+                    if not line:
+                        continue
+                    try:
+                        data = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    token = data.get("message", {}).get("content", "")
+                    if token:
+                        yield token
+                    if data.get("done"):
+                        return
+
+    async for token in _filter_think(_raw()):
+        yield token
 
 
 async def chat_stream(role: str, user_message: str, history: list | None = None):

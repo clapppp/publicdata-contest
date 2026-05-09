@@ -22,13 +22,7 @@ $SUDO apt-get install -y --no-install-recommends \
 echo "[2/4] Python 패키지 설치"
 pip install --no-cache-dir -r requirements.txt
 
-echo "[3/4] Coqui TTS 설치 (XTTS v2 — 한국어 고품질 로컬 TTS)"
-# blinker 1.4가 distutils로 시스템에 설치된 경우 TTS 의존성 충돌 발생 → 강제 덮어쓰기
-pip install --no-cache-dir --ignore-installed blinker
-pip install --no-cache-dir "TTS>=0.22.0"
-# XTTS v2 모델 가중치 (~1.8GB)는 서버 첫 실행 시 HF_HOME 에 자동 다운로드됨
-
-echo "[4/4] Ollama 설치"
+echo "[3/4] Ollama 설치"
 if ! command -v ollama &> /dev/null; then
     curl -fsSL https://ollama.com/install.sh | sh
 else

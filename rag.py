@@ -70,8 +70,15 @@ _client = None
 _collection = None
 
 
+SKIP_FETCH_THRESHOLD = 100  # 컬렉션에 이 수 이상이면 API 수집 스킵
+
+
 def setup():
-    """ChromaDB 초기화 + 매 startup마다 컬렉션 wipe → 워크넷에서 재수집."""
+    """
+    ChromaDB 초기화.
+    - 컬렉션이 SKIP_FETCH_THRESHOLD(100)건 이상이면 기존 데이터 그대로 사용.
+    - 미만이거나 없으면 컬렉션 재생성 후 100세누리 API 수집.
+    """
     global _client, _collection
 
     print(f"📦 임베딩 모델 로드: {EMBED_MODEL} (CPU)")
@@ -84,12 +91,20 @@ def setup():
 
     _client = chromadb.PersistentClient(path=DB_PATH)
 
-    # 매 startup마다 컬렉션 삭제 후 재생성 (stale 데이터 방지)
+    # 기존 컬렉션 확인
     try:
+        _collection = _client.get_collection(
+            name=COLLECTION_NAME,
+            embedding_function=embed_fn,
+        )
+        count = _collection.count()
+        if count >= SKIP_FETCH_THRESHOLD:
+            print(f"✅ 기존 컬렉션 재사용 ({count}건 ≥ {SKIP_FETCH_THRESHOLD}) — API 수집 스킵")
+            return
+        print(f"  기존 컬렉션 {count}건 ({SKIP_FETCH_THRESHOLD}건 미만) — 재수집")
         _client.delete_collection(COLLECTION_NAME)
-        print("  기존 컬렉션 삭제")
     except Exception:
-        pass
+        print("  컬렉션 없음 — 새로 생성")
 
     _collection = _client.create_collection(
         name=COLLECTION_NAME,
@@ -97,7 +112,7 @@ def setup():
         metadata={"hnsw:space": "cosine"},
     )
 
-    print("📝 워크넷 API에서 데이터 수집")
+    print("📝 100세누리 API에서 데이터 수집")
     refresh()
 
 

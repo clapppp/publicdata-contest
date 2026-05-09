@@ -28,25 +28,27 @@ def setup():
 def _to_wav(src: str) -> str:
     """
     ffmpeg으로 임의 포맷 오디오 → 16kHz mono WAV 변환.
+    포맷 힌트를 순서대로 시도 (Chrome=webm, Firefox=ogg, Safari=mp4).
     반환: 변환된 WAV 경로 (호출자가 삭제해야 함)
     """
     dst = tempfile.mktemp(suffix=".wav")
-    result = subprocess.run(
-        [
-            "ffmpeg", "-y",
-            "-i", src,
-            "-ar", "16000",   # Whisper 권장 샘플레이트
-            "-ac", "1",       # mono
-            "-f", "wav",
-            dst,
-        ],
-        capture_output=True,
-        timeout=30,
-    )
-    if result.returncode != 0:
-        err = result.stderr.decode(errors="replace")
-        raise RuntimeError(f"ffmpeg 변환 실패:\n{err}")
-    return dst
+
+    # None = 자동 감지, 실패 시 명시적 포맷 힌트로 재시도
+    for fmt in [None, "webm", "ogg", "mp4", "mp3"]:
+        cmd = ["ffmpeg", "-y"]
+        if fmt:
+            cmd += ["-f", fmt]
+        cmd += ["-i", src, "-ar", "16000", "-ac", "1", "-f", "wav", dst]
+
+        result = subprocess.run(cmd, capture_output=True, timeout=30)
+        if result.returncode == 0:
+            if fmt:
+                print(f"  ↳ 오디오 포맷 힌트 사용: {fmt}")
+            return dst
+
+    # 모든 시도 실패 시 마지막 에러 메시지 출력
+    last_err = result.stderr.decode(errors="replace").strip().splitlines()[-1]
+    raise RuntimeError(f"ffmpeg 변환 실패 (모든 포맷 시도): {last_err}")
 
 
 def transcribe(audio_path: str, language: str = "ko") -> str:

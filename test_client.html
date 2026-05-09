@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Silver Voice — 음성 챗 + 이력서</title>
+<title>Silver Voice — 음성 챗 + 이력서 (텍스트 TTS)</title>
 <style>
   body { font-family: -apple-system, system-ui, sans-serif; max-width: 760px;
          margin: 1.5em auto; padding: 0 1em; line-height: 1.5; color: #222; }
@@ -80,30 +80,24 @@ let ws = null;
 let recorder = null;
 let recStream = null;
 let userChunks = [];
-let firstAudioAt = 0;
 let turnStartAt = 0;
 
-// 응답 오디오 큐 (MeloTTS는 문장당 1 wav 청크 → 도착 즉시 순차 재생)
-let audioQueue = [];
-let nowPlaying = null;
-let chunksPlayedThisTurn = 0;
-let bytesThisTurn = 0;
+// 웹 브라우저 TTS (테스트용 — Flutter 앱에서는 flutter_tts 사용)
+const synth = window.speechSynthesis;
+let ttsQueue = "";
+const SENTENCE_END = /[.?!。？！]/;
 
-function playNext() {
-  if (audioQueue.length === 0) { nowPlaying = null; return; }
-  const blob = audioQueue.shift();
-  nowPlaying = new Audio(URL.createObjectURL(blob));
-  nowPlaying.onended = playNext;
-  nowPlaying.onerror = (e) => { log("audio error: " + e); playNext(); };
-  nowPlaying.play();
-}
-
-function enqueueAudio(arrayBuffer) {
-  const blob = new Blob([arrayBuffer], { type: "audio/wav" });
-  bytesThisTurn += arrayBuffer.byteLength;
-  chunksPlayedThisTurn++;
-  audioQueue.push(blob);
-  if (!nowPlaying) playNext();
+function speakPending(force = false) {
+  const s = ttsQueue.trimEnd();
+  if (!s) return;
+  // 문장 종결 부호 있을 때 또는 force(reply_done) 시 발화
+  if (force || SENTENCE_END.test(s[s.length - 1])) {
+    const utt = new SpeechSynthesisUtterance(ttsQueue);
+    utt.lang = "ko-KR";
+    utt.rate = 0.95;
+    synth.speak(utt);
+    ttsQueue = "";
+  }
 }
 
 const log = (msg) => {
@@ -169,7 +163,9 @@ $("connect").onclick = () => {
       const msg = JSON.parse(e.data);
       if (msg.type === "llm_token") {
         $("reply").textContent += msg.text;
-        return;  // 너무 자주라 로그 생략
+        ttsQueue += msg.text;
+        speakPending();
+        return;
       }
       log(`← ${msg.type}` + (msg.text !== undefined ? `  "${msg.text}"` : ""));
 
@@ -180,14 +176,11 @@ $("connect").onclick = () => {
       } else if (msg.type === "transcript") {
         $("transcript").textContent = msg.text;
         $("reply").textContent = "";
-        chunksPlayedThisTurn = 0;
-        bytesThisTurn = 0;
-        firstAudioAt = 0;
+        ttsQueue = "";
+        synth.cancel();
       } else if (msg.type === "resume_state") {
-        // 턴 시작 / sync 응답 — 변경 없는 스냅샷
         renderResume(msg.resume, msg.missing_korean);
       } else if (msg.type === "resume_updated") {
-        // 추출 직후 — 변경된 상태. 깜빡임으로 시각적 강조
         renderResume(msg.resume, msg.missing_korean);
         const tbl = $("resumeTable");
         tbl.style.transition = "background 0.3s";
@@ -195,17 +188,12 @@ $("connect").onclick = () => {
         setTimeout(() => { tbl.style.background = ""; }, 600);
         log("📋 이력서 갱신됨");
       } else if (msg.type === "reply_done") {
+        speakPending(true);  // 잔여 버퍼 강제 발화
         const total = (performance.now() - turnStartAt) / 1000;
-        const firstAudioDelay = firstAudioAt ? (firstAudioAt - turnStartAt) / 1000 : NaN;
-        log(`완료: ${chunksPlayedThisTurn} chunks / ${bytesThisTurn}B / 첫 오디오 ${firstAudioDelay.toFixed(2)}s / 총 ${total.toFixed(2)}s`);
+        log(`완료: 총 ${total.toFixed(2)}s`);
       } else if (msg.type === "error") {
         log(`⚠️ ERROR: ${msg.msg}`);
       }
-    } else {
-      // binary = wav 청크 1개 (한 문장) → 도착 즉시 큐에 푸시 + 자동 재생
-      if (!firstAudioAt) firstAudioAt = performance.now();
-      enqueueAudio(e.data);
-    }
   };
 };
 
