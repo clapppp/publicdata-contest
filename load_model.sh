@@ -13,12 +13,13 @@ OLLAMA_NAME="qwen3:14b"
 
 mkdir -p "$MODEL_DIR"
 
-echo "[0/5] 이미 등록된 모델인지 확인"
-if ollama list 2>/dev/null | grep -q "^${OLLAMA_NAME}"; then
+echo "[0/4] 이미 등록된 모델인지 확인"
+if ollama show "${OLLAMA_NAME}" &>/dev/null; then
     echo "  ↳ ${OLLAMA_NAME} 이미 등록됨 — 스킵"
     ollama list
     exit 0
 fi
+echo "  ↳ 미등록 — 다운로드 진행"
 
 echo "[1/4] Ollama 서버 재시작 (OLLAMA_MODELS=$OLLAMA_MODELS 적용)"
 pkill -f "ollama serve" 2>/dev/null || true
