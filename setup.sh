@@ -22,8 +22,11 @@ $SUDO apt-get install -y --no-install-recommends \
 echo "[2/4] Python 패키지 설치"
 pip install --no-cache-dir -r requirements.txt
 
-echo "[3/4] MeloTTS 설치 (한국어 로컬 TTS, git+pip)"
-pip install --no-cache-dir git+https://github.com/myshell-ai/MeloTTS.git
+echo "[3/4] Coqui TTS 설치 (XTTS v2 — 한국어 고품질 로컬 TTS)"
+# TTS 패키지는 requirements.txt에 포함되어 [2/4] 단계에서 이미 설치됨
+# XTTS v2 모델 가중치 (~1.8GB)는 서버 첫 실행 시 HF_HOME 에 자동 다운로드됨
+echo "  ↳ TTS 패키지 설치 확인"
+pip show TTS | grep -E "^(Name|Version)" || pip install --no-cache-dir "TTS>=0.22.0"
 
 echo "[4/4] Ollama 설치"
 if ! command -v ollama &> /dev/null; then
@@ -38,5 +41,5 @@ echo "  HF_HOME        = $HF_HOME"
 echo "  OLLAMA_MODELS  = $OLLAMA_MODELS"
 echo ""
 echo "다음 단계:"
-echo "  bash load_model.sh    # qwen3 8b GGUF 다운로드 + Ollama 등록"
+echo "  bash load_model.sh    # qwen3 14b GGUF 다운로드 + Ollama 등록"
 echo "  bash run.sh           # 서버 실행"
