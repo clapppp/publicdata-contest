@@ -2,7 +2,8 @@
 rag.py — 채용공고 RAG (ChromaDB)
 - 임베딩: BAAI/bge-m3 (CPU)
 - 저장: PersistentClient (./chroma_db)
-- 데이터: 워크넷 채용정보 OpenAPI
+- 데이터: 한국노인인력개발원 100세누리 구인정보 OpenAPI
+         → 60세 이상 시니어 대상 민간 일자리 (일 1회 갱신)
 """
 from xml.etree import ElementTree as ET
 
@@ -14,19 +15,18 @@ EMBED_MODEL = "BAAI/bge-m3"
 COLLECTION_NAME = "job_postings"
 DB_PATH = "./chroma_db"
 
-# 워크넷 채용정보 채용목록 API
-# 참조: https://www.data.go.kr/data/3038225/openapi.do
-WORKNET_BASE = "https://www.work24.go.kr/cm/openApi/call/wk/callOpenApiSvcInfo210L01.do"
-WORKNET_API_KEY = "5e05eff1-fb3c-4037-8d3f-687294fa2e34"
+# 한국노인인력개발원 100세누리 구인정보 채용목록 API
+# 가이드: OpenAPI활용가이드(한국노인인력개발원_100세누리구인정보)_v1.1.docx
+SENURI_BASE = "https://apis.data.go.kr/B552474/SenuriService/getJobList"
+SENURI_API_KEY = "b989a98fd4bd839b1a1e8f8f3fe5dd428629d05a4b3d1ba3d13d0317e5d5368f"
 
-# 통계청 시도 코드 (워크넷 region 파라미터에 사용)
-# TODO: 실제 워크넷 API 가이드 PDF에서 region 코드 형식 확인 후 조정
-REGIONS = {
-    "서울": "11000", "부산": "26000", "대구": "27000", "인천": "28000",
-    "광주": "29000", "대전": "30000", "울산": "31000", "세종": "36000",
-    "경기": "41000", "강원": "42000", "충북": "43000", "충남": "44000",
-    "전북": "45000", "전남": "46000", "경북": "47000", "경남": "48000",
-    "제주": "50000",
+# 고용형태 코드 (응답엔 emplymShpNm으로 한글이 같이 옴 — 참고용)
+EMPLOYMENT_TYPES = {
+    "CM0101": "정규직",
+    "CM0102": "계약직",
+    "CM0103": "시간제일자리",
+    "CM0104": "일당직",
+    "CM0105": "기타",
 }
 
 # 워크넷 API 키 없을 때 폴백용 샘플 (Colab 검증 시 사용한 8건)
@@ -101,12 +101,12 @@ def setup():
 def refresh():
     """데이터 새로 수집 후 컬렉션 업데이트 (스케줄러에서 매일 06시 호출 예정)"""
     try:
-        jobs = fetch_from_worknet(WORKNET_API_KEY)
+        jobs = fetch_from_senuri(SENURI_API_KEY)
         if not jobs:
-            print("⚠️ 워크넷 응답 0건 → 샘플 데이터로 폴백")
+            print("⚠️ 100세누리 응답 0건 → 샘플 데이터로 폴백")
             jobs = SAMPLE_JOBS
     except Exception as e:
-        print(f"⚠️ 워크넷 수집 실패 ({e}) → 샘플 데이터로 폴백")
+        print(f"⚠️ 100세누리 수집 실패 ({e}) → 샘플 데이터로 폴백")
         jobs = SAMPLE_JOBS
 
     _collection.upsert(
@@ -124,55 +124,104 @@ def refresh():
     print(f"✅ 적재 완료: {len(jobs)}건")
 
 
-def fetch_from_worknet(api_key: str) -> list[dict]:
+def fetch_from_senuri(api_key: str, page_size: int = 100, exclude_closed: bool = True) -> list[dict]:
     """
-    워크넷 채용정보 채용목록 API 호출 (17개 시도 순회).
+    한국노인인력개발원 100세누리 구인정보 채용목록 API.
 
-    NOTE — 아래 파라미터/응답 필드명은 일반적인 워크넷 OpenAPI 패턴 기반 추정.
-    공식 가이드 PDF (work24.go.kr 로그인 후 다운로드) 받으면 다음 항목 검증/조정 필요:
-      - region 코드 형식 (현재: 통계청 시도코드)
-      - 우대조건 파라미터명/코드 (preferentialCd? prefCd? 고령자 코드는?)
-      - 응답 XML 루트/항목 태그명 (현재 추정: <wantedInfo>)
-      - 필드명 (wantedAuthNo / title / company 등)
+    엔드포인트: GET https://apis.data.go.kr/B552474/SenuriService/getJobList
+    필수 파라미터: serviceKey, pageNo, numOfRows
+    응답: <response><header><resultCode/><resultMsg/></header>
+              <body><items><item>...</item></items>
+                    <numOfRows/><pageNo/><totalCount/></body></response>
+
+    Args:
+        api_key: 공공데이터포털 발급 인증키
+        page_size: 페이지당 결과 수 (numOfRows)
+        exclude_closed: 마감된 공고 제외 여부 (기본 True)
+
+    Returns:
+        정규화된 채용공고 dict 리스트
     """
     all_jobs = []
-    for region_name, region_code in REGIONS.items():
-        try:
-            res = requests.get(
-                WORKNET_BASE,
-                params={
-                    "authKey": api_key,
-                    "callTp": "L",
-                    "returnType": "XML",
-                    "startPage": 1,
-                    "display": 100,
-                    "region": region_code,
-                    # "preferentialCd": "...",  # 고령자 우대 코드 확인 필요
-                },
-                timeout=30,
-            )
-            res.raise_for_status()
-            root = ET.fromstring(res.text)
+    page = 1
+    total_count = None
+    skipped_closed = 0
 
-            count = 0
-            for item in root.iter("wanted"):  # 응답 항목 태그명 추정
-                job_id = item.findtext("wantedAuthNo", "").strip()
-                if not job_id:
-                    continue
-                all_jobs.append({
-                    "id": job_id,
-                    "title": item.findtext("title", "").strip(),
-                    "company": item.findtext("company", "").strip(),
-                    "location": item.findtext("workPlcNm", region_name).strip(),
-                    "work_type": item.findtext("empTpNm", "").strip(),
-                    "description": (item.findtext("jobsCd", "") or item.findtext("etcItm", "")).strip(),
-                    "age_friendly": True,  # 우대조건 필터 적용했다고 가정
-                    "physical_intensity": "unknown",
-                })
-                count += 1
-            print(f"  {region_name}: {count}건")
-        except Exception as e:
-            print(f"  ⚠️ {region_name} 실패: {e}")
+    while True:
+        res = requests.get(
+            SENURI_BASE,
+            params={
+                "serviceKey": api_key,
+                "pageNo": page,
+                "numOfRows": page_size,
+            },
+            timeout=30,
+        )
+        res.raise_for_status()
+        root = ET.fromstring(res.text)
+
+        # 결과코드 확인 (정상: 0 또는 00)
+        result_code = (root.findtext(".//resultCode") or "").strip()
+        if result_code not in ("0", "00"):
+            result_msg = (root.findtext(".//resultMsg") or "").strip()
+            raise RuntimeError(f"100세누리 API 에러 [{result_code}]: {result_msg}")
+
+        if total_count is None:
+            total_count = int((root.findtext(".//totalCount") or "0").strip() or "0")
+            print(f"  totalCount: {total_count}건")
+            if total_count == 0:
+                return []
+
+        items = root.findall(".//item")
+        if not items:
+            break
+
+        for item in items:
+            job_id = (item.findtext("jobId") or "").strip()
+            if not job_id:
+                continue
+
+            deadline = (item.findtext("deadline") or "").strip()
+            if exclude_closed and deadline == "마감":
+                skipped_closed += 1
+                continue
+
+            jobcls_nm = (item.findtext("jobclsNm") or "").strip()
+            acpt = (item.findtext("acptMthd") or "").strip()
+            fr_dd = (item.findtext("frDd") or "").strip()
+            to_dd = (item.findtext("toDd") or "").strip()
+
+            description_parts = []
+            if jobcls_nm:
+                description_parts.append(f"직종: {jobcls_nm}")
+            if acpt:
+                description_parts.append(f"접수방법: {acpt}")
+            if fr_dd or to_dd:
+                description_parts.append(f"접수기간: {fr_dd}~{to_dd}")
+            if deadline:
+                description_parts.append(f"상태: {deadline}")
+
+            all_jobs.append({
+                "id": job_id,
+                "title": (item.findtext("recrtTitle") or "").strip(),
+                "company": (item.findtext("oranNm") or "").strip() or "(기업명 미공개)",
+                "location": (item.findtext("workPlcNm") or "").strip(),
+                "work_type": (item.findtext("emplymShpNm") or "").strip(),
+                "description": " | ".join(description_parts),
+                "age_friendly": True,  # 100세누리 전체가 60세 이상 시니어 대상
+                "physical_intensity": "unknown",
+            })
+
+        # 종료 조건: 마지막 페이지 도달 또는 totalCount 모두 처리
+        processed = (page - 1) * page_size + len(items)
+        if processed >= total_count or len(items) < page_size:
+            break
+        page += 1
+
+    msg = f"  수집 완료: {len(all_jobs)}건"
+    if skipped_closed:
+        msg += f" (마감 {skipped_closed}건 제외)"
+    print(msg)
     return all_jobs
 
 
