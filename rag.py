@@ -5,6 +5,7 @@ rag.py — 채용공고 RAG (ChromaDB)
 - 데이터: 한국노인인력개발원 100세누리 구인정보 OpenAPI
          → 60세 이상 시니어 대상 민간 일자리 (일 1회 갱신)
 """
+import time
 from xml.etree import ElementTree as ET
 
 import requests
@@ -124,7 +125,13 @@ def refresh():
     print(f"✅ 적재 완료: {len(jobs)}건")
 
 
-def fetch_from_senuri(api_key: str, page_size: int = 100, exclude_closed: bool = True) -> list[dict]:
+def fetch_from_senuri(
+    api_key: str,
+    page_size: int = 100,
+    max_pages: int = 10,
+    exclude_closed: bool = True,
+    sleep_between: float = 0.5,
+) -> list[dict]:
     """
     한국노인인력개발원 100세누리 구인정보 채용목록 API.
 
@@ -136,28 +143,45 @@ def fetch_from_senuri(api_key: str, page_size: int = 100, exclude_closed: bool =
 
     Args:
         api_key: 공공데이터포털 발급 인증키
-        page_size: 페이지당 결과 수 (numOfRows)
-        exclude_closed: 마감된 공고 제외 여부 (기본 True)
+        page_size: 페이지당 결과 수 (numOfRows). 기본 100
+        max_pages: 최대 페이지 수. 기본 10 = 1000건. 100세누리는 워크넷/일모아 통합
+                   집계라 totalCount가 수십만~백만 단위로 오는데, CPU bge-m3 임베딩
+                   부담 + 갱신 시간 고려해 cap. 더 받고 싶으면 늘리되 임베딩 시간 주의
+        exclude_closed: 마감된 공고 제외 (기본 True)
+        sleep_between: 페이지 간 sleep 초. 401 burst rate limit 방지용 (기본 0.5)
 
     Returns:
-        정규화된 채용공고 dict 리스트
+        정규화된 채용공고 dict 리스트 (최대 max_pages * page_size 건)
     """
     all_jobs = []
     page = 1
     total_count = None
     skipped_closed = 0
 
-    while True:
-        res = requests.get(
-            SENURI_BASE,
-            params={
-                "serviceKey": api_key,
-                "pageNo": page,
-                "numOfRows": page_size,
-            },
-            timeout=30,
-        )
-        res.raise_for_status()
+    while page <= max_pages:
+        if page > 1:
+            time.sleep(sleep_between)
+
+        try:
+            res = requests.get(
+                SENURI_BASE,
+                params={
+                    "serviceKey": api_key,
+                    "pageNo": page,
+                    "numOfRows": page_size,
+                },
+                timeout=30,
+            )
+            res.raise_for_status()
+        except requests.HTTPError as e:
+            status = e.response.status_code if e.response is not None else 0
+            if status in (401, 429, 503):
+                # rate limit / quota / 일시 거부 — 지금까지 받은 거로 진행
+                print(f"  ⚠️ page {page}: HTTP {status} (rate limit 추정) — "
+                      f"여기까지 {len(all_jobs)}건만 사용")
+                break
+            raise
+
         root = ET.fromstring(res.text)
 
         # 결과코드 확인 (정상: 0 또는 00)
@@ -168,7 +192,7 @@ def fetch_from_senuri(api_key: str, page_size: int = 100, exclude_closed: bool =
 
         if total_count is None:
             total_count = int((root.findtext(".//totalCount") or "0").strip() or "0")
-            print(f"  totalCount: {total_count}건")
+            print(f"  totalCount: {total_count}건 (cap {max_pages * page_size}건까지 수집)")
             if total_count == 0:
                 return []
 
@@ -212,7 +236,7 @@ def fetch_from_senuri(api_key: str, page_size: int = 100, exclude_closed: bool =
                 "physical_intensity": "unknown",
             })
 
-        # 종료 조건: 마지막 페이지 도달 또는 totalCount 모두 처리
+        # 종료: 마지막 페이지 또는 totalCount 모두 처리
         processed = (page - 1) * page_size + len(items)
         if processed >= total_count or len(items) < page_size:
             break
