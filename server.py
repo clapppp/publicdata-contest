@@ -40,8 +40,8 @@ import resumes
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """서버 시작 시 모든 모듈 초기화 (lifespan 패턴)"""
-    if not llm.check_ollama():
-        raise RuntimeError("Ollama 미준비. setup.sh + load_model.sh 실행 필요")
+    if not llm.check_claude():
+        raise RuntimeError("Claude API 키 없음. ANTHROPIC_API_KEY 환경변수를 설정하세요.")
     rag.setup()
     stt.setup()
     yield
