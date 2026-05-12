@@ -4,12 +4,12 @@ server.py — FastAPI 메인
 엔드포인트:
   GET    /health
   POST   /refresh                  100세누리 채용공고 수동 재수집
-  POST   /voice                    legacy 음성메시지 (STT+LLM 텍스트 응답)
   WS     /voice/ws                 ★ 메인: 음성 챗 + 이력서 누적 (user_id 기반)
   GET    /resume/{user_id}         현재 이력서 + 빈 항목
+  POST   /resume/{user_id}         이력서 필드 직접 수정 (부분 업데이트)
   DELETE /resume/{user_id}         이력서/대화 이력 초기화
+  POST   /recommend/{user_id}      저장된 이력서로 채용 추천
   POST   /recommend                ResumeData 직접 받아 추천
-  POST   /recommend/{user_id}      저장된 이력서로 추천
 
 TTS는 서버에서 제거됨 — 앱(Flutter)의 디바이스 TTS가 llm_token을 받아 직접 처리.
 """
@@ -22,9 +22,6 @@ from contextlib import asynccontextmanager
 from fastapi import (
     FastAPI,
     HTTPException,
-    UploadFile,
-    File,
-    Form,
     WebSocket,
     WebSocketDisconnect,
 )
@@ -66,6 +63,15 @@ class ResumeData(BaseModel):
     physical_condition: str = ""
 
 
+class ResumeUpdateRequest(BaseModel):
+    name: str | None = None
+    age: int | None = None
+    location: str | None = None
+    career: str | None = None
+    preferred_work_type: str | None = None
+    physical_condition: str | None = None
+
+
 class RecommendRequest(BaseModel):
     resume: ResumeData
     top_k: int = 5
@@ -86,41 +92,6 @@ def refresh_jobs():
         return {"status": "ok", "before": before, "after": after, "delta": after - before}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.post("/voice")
-async def voice_chat(
-    audio: UploadFile = File(...),
-    history: str = Form("[]"),
-):
-    """
-    legacy 단발성 엔드포인트 (STT + LLM 텍스트만 반환, TTS 없음).
-    메인 흐름은 WS /voice/ws 사용 권장.
-    """
-    in_path = None
-    try:
-        history_list = json.loads(history)
-
-        with tempfile.NamedTemporaryFile(suffix=".bin", delete=False) as f:
-            f.write(await audio.read())
-            in_path = f.name
-        user_text = stt.transcribe(in_path)
-        reply_text = llm.chat(role="voice", user_message=user_text, history=history_list)
-
-        return {
-            "user_text": user_text,
-            "reply_text": reply_text,
-            "history": history_list + [
-                {"role": "user", "content": user_text},
-                {"role": "assistant", "content": reply_text},
-            ],
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        if in_path and os.path.exists(in_path):
-            os.unlink(in_path)
-
 
 @app.websocket("/voice/ws")
 async def voice_ws(ws: WebSocket):
@@ -209,6 +180,7 @@ async def voice_ws(ws: WebSocket):
                 full_reply += token
 
             # 6) history 업데이트
+            full_reply = llm.strip_markdown(full_reply)
             resumes.append_turn(resume, user_text, full_reply)
 
             # 7) 이력서 추출 (백그라운드 — 사용자 체감 지연 없음)
@@ -247,6 +219,18 @@ def reset_resume(user_id: str):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+@app.post("/resume/{user_id}")
+def update_resume(user_id: str, req: ResumeUpdateRequest):
+    """프론트에서 직접 이력서 필드를 수정할 때 사용."""
+    try:
+        resume = resumes.load(user_id)
+        update = req.model_dump(exclude_none=True)
+        resume.update(update)
+        resumes.save(user_id, resume)
+        return resumes.public_view(resume)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
 
 @app.post("/recommend/{user_id}")
 def recommend_by_user(user_id: str, top_k: int = 5):
@@ -265,7 +249,7 @@ def recommend_by_user(user_id: str, top_k: int = 5):
         if not jobs:
             return {"recommendations": [], "message": "조건에 맞는 채용공고가 없습니다."}
         prompt = rag.build_recommend_prompt(resume_dict, jobs)
-        llm_response = llm.chat(role="recommend", user_message=prompt)
+        llm_response = llm.chat(prompt)
         try:
             start = llm_response.find("{")
             end = llm_response.rfind("}") + 1
@@ -285,7 +269,7 @@ def recommend(req: RecommendRequest):
         if not jobs:
             return {"recommendations": [], "message": "조건에 맞는 채용공고가 없습니다."}
         prompt = rag.build_recommend_prompt(resume_dict, jobs)
-        llm_response = llm.chat(role="recommend", user_message=prompt)
+        llm_response = llm.chat(prompt)
         try:
             start = llm_response.find("{")
             end = llm_response.rfind("}") + 1

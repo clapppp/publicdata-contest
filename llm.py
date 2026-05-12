@@ -3,9 +3,9 @@ llm.py — Claude API 클라이언트 (claude-haiku-4-5)
 
 함수 종류:
 - check_claude()                   : API 키 / 연결 확인
-- chat()                           : 동기, 전체 응답 한 번 (legacy POST /voice, /recommend)
+- strip_markdown()                 : LLM 응답에서 마크다운 특수기호 제거
+- chat()                           : 동기, 전체 응답 한 번 (/recommend)
 - chat_stream_with_prompt()        : 비동기, system prompt 직접 주입 stream (/voice/ws)
-- chat_stream()                    : 비동기, role 기반 stream (legacy)
 - build_voice_system_prompt()      : 이력서 상태 → 동적 voice system prompt
 - extract_resume()                 : 동기, 대화 history → 구조화된 ResumeData JSON
 """
@@ -18,13 +18,18 @@ MODEL_NAME = "claude-haiku-4-5"
 _client = anthropic.Anthropic()           # 동기 호출용 (chat, extract_resume, check)
 _async_client = anthropic.AsyncAnthropic()  # 비동기 스트리밍용 (voice/ws)
 
-SYSTEM_PROMPTS = {
-    "voice": """너는 시니어 구직자를 돕는 친절한 상담사야.
-한 번에 한 가지 질문만 해야 해. 짧고 쉬운 말로 대화해.
-이름, 나이, 주소, 연락처, 경력, 학력 순서로 물어봐.
-사용자가 답하면 다음 항목을 물어봐.""",
+# ── 마크다운 제거 ────────────────────────────────────────────────────────────
 
-    "recommend": """너는 시니어 구직 매칭 전문가야.
+_MD_RE = re.compile(r'[*_`#>~\[\]]+')
+
+
+def strip_markdown(text: str) -> str:
+    """LLM 응답에서 마크다운 특수기호를 제거하고 공백을 정리한다."""
+    text = _MD_RE.sub('', text)
+    return ' '.join(text.split())
+
+
+RECOMMEND_SYSTEM = """너는 시니어 구직 매칭 전문가야.
 아래 이력서 정보와 채용공고를 분석해서 반드시 JSON 형식으로만 반환해.
 다른 말은 절대 하지 마. JSON만 반환해.
 형식:
@@ -38,8 +43,7 @@ SYSTEM_PROMPTS = {
       "reason": "추천 이유 한 문장"
     }
   ]
-}""",
-}
+}"""
 
 
 def check_claude() -> bool:
@@ -60,28 +64,20 @@ def check_claude() -> bool:
         return False
 
 
-def chat(role: str, user_message: str, history: list | None = None) -> str:
+def chat(user_message: str) -> str:
     """
-    동기 단일 응답.
+    채용 추천용 동기 단일 응답.
     Args:
-        role: "voice" 또는 "recommend"
-        user_message: 사용자 입력
-        history: [{"role": "user"/"assistant", "content": "..."}]
+        user_message: 이력서 + 채용공고 포함 프롬프트
     Returns:
-        LLM 응답 텍스트
+        LLM 응답 텍스트 (JSON)
     """
-    if history is None:
-        history = []
-
-    messages = list(history)
-    messages.append({"role": "user", "content": user_message})
-
     response = _client.messages.create(
         model=MODEL_NAME,
         max_tokens=2048,
-        system=SYSTEM_PROMPTS[role],
-        messages=messages,
-        temperature=0.7 if role == "voice" else 0.1,
+        system=RECOMMEND_SYSTEM,
+        messages=[{"role": "user", "content": user_message}],
+        temperature=0.1,
     )
     return response.content[0].text
 
@@ -90,6 +86,7 @@ def chat(role: str, user_message: str, history: list | None = None) -> str:
 
 VOICE_SYSTEM_TEMPLATE = """너는 시니어 구직자를 돕는 친절한 음성 상담사야.
 짧고 쉬운 말로 대화해. 어려운 단어 쓰지 마. 한 번에 한 가지 질문만 해.
+마크다운 기호(**,*,_,#,`,>) 절대 사용하지 마. 한두 문장으로 짧게 답해.
 
 [지금까지 알아낸 이력서]
 - 이름: {name}
@@ -111,7 +108,7 @@ VOICE_SYSTEM_TEMPLATE = """너는 시니어 구직자를 돕는 친절한 음성
 
 VOICE_SYSTEM_COMPLETE = """너는 시니어 구직자를 돕는 친절한 음성 상담사야.
 사용자 이력서가 모두 채워진 상태야. 짧게 인사하고 "일자리 추천을 받아보시겠어요?" 라고 마무리해.
-새 질문은 더 안 해."""
+새 질문은 더 안 해. 마크다운 기호(**,*,_,#,`,>) 절대 사용하지 마. 한두 문장으로 짧게 답해."""
 
 
 def build_voice_system_prompt(resume: dict, missing_keys: list[str]) -> str:
@@ -245,43 +242,6 @@ async def chat_stream_with_prompt(
             yield text
 
 
-# ── legacy stream (role 기반) ────────────────────────────────────────────────
-
-async def chat_stream(role: str, user_message: str, history: list | None = None):
-    """
-    role 기반 스트리밍 (legacy — /voice/ws 이전 호환용).
-
-    Yields:
-        str — 텍스트 토큰 조각
-    """
-    if history is None:
-        history = []
-
-    messages = list(history)
-    messages.append({"role": "user", "content": user_message})
-
-    async with _async_client.messages.stream(
-        model=MODEL_NAME,
-        max_tokens=1024,
-        system=SYSTEM_PROMPTS[role],
-        messages=messages,
-        temperature=0.7 if role == "voice" else 0.1,
-    ) as stream:
-        async for text in stream.text_stream:
-            yield text
-
-
 if __name__ == "__main__":
     if check_claude():
-        print("\n--- voice 모드 테스트 (sync) ---")
-        print(chat("voice", "안녕하세요, 이력서 작성 도와주세요"))
-
-        print("\n--- voice 모드 테스트 (stream) ---")
-        import asyncio
-
-        async def _demo():
-            async for token in chat_stream("voice", "안녕하세요, 이력서 작성 도와주세요"):
-                print(token, end="", flush=True)
-            print()
-
-        asyncio.run(_demo())
+        print("\n--- 연결 확인 완료 ---")
