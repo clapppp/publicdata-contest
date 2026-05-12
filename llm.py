@@ -74,7 +74,7 @@ def chat(user_message: str) -> str:
     """
     response = _client.messages.create(
         model=MODEL_NAME,
-        max_tokens=2048,
+        max_tokens=4096,
         system=RECOMMEND_SYSTEM,
         messages=[{"role": "user", "content": user_message}],
         temperature=0.1,

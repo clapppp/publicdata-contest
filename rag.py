@@ -428,7 +428,8 @@ def build_recommend_prompt(resume: dict, jobs: list[dict]) -> str:
 [RAG로 선별된 채용공고 {len(jobs)}건]
 {jobs_text}
 
-위 정보를 바탕으로 JSON 형식으로 추천 결과를 반환해."""
+위 {len(jobs)}건을 하나도 빠짐없이 전부 recommendations 배열에 포함해서 JSON으로 반환해.
+임의로 줄이거나 필터링하지 마."""
 
 
 if __name__ == "__main__":
