@@ -380,17 +380,20 @@ def _resume_to_query(resume: dict) -> str:
 
 
 def search(resume: dict, top_k: int = 5) -> list[dict]:
-    """이력서 기반 유사 채용공고 검색 (고령친화 하드필터 적용)"""
+    """이력서 기반 유사 채용공고 검색"""
     if _collection is None:
         raise RuntimeError("setup()을 먼저 호출하세요.")
 
+    total = _collection.count()
+    if total == 0:
+        return []
+
     query_text = _resume_to_query(resume)
-    print(f"🔍 검색 쿼리: {query_text}")
+    print(f"🔍 검색 쿼리: {query_text} (top_k={top_k}, 전체={total}건)")
 
     results = _collection.query(
         query_texts=[query_text],
-        n_results=min(top_k, _collection.count()),
-        where={"age_friendly": "True"},
+        n_results=min(top_k, total),
     )
 
     return [
